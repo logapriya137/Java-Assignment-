@@ -1,0 +1,403 @@
+package com.digitalwallet;
+
+import java.util.*;
+import java.text.SimpleDateFormat;
+
+/**
+ * DigitalWalletApp
+ * Single-file Java console application implementing a digital wallet system.
+ *
+ * Usage: compile and run. Menu-driven interface.
+ */
+public class DigitalWalletApp {
+
+    // --- Data stores ---
+    private static Map<String, User> users = new HashMap<>();
+    private static Map<String, Wallet> wallets = new HashMap<>();
+    private static Map<String, Transaction> transactions = new HashMap<>();
+
+    private static Scanner scanner = new Scanner(System.in);
+
+    public static void main(String[] args) {
+        System.out.println("=== Digital Wallet System ===");
+        boolean running = true;
+        while (running) {
+            printMenu();
+            String choice = scanner.nextLine().trim();
+            switch (choice) {
+                case "1": addUser(); break;
+                case "2": createWallet(); break;
+                case "3": topUp(); break;
+                case "4": transfer(); break;
+                case "5": payMerchant(); break;
+                case "6": refund(); break;
+                case "7": viewStatement(); break;
+                case "8": running = false; break;
+                default: System.out.println("Invalid choice. Enter 1-8."); break;
+            }
+        }
+        System.out.println("Exiting. Goodbye!");
+    }
+
+    private static void printMenu() {
+        System.out.println("\nMenu:");
+        System.out.println("1. Add User");
+        System.out.println("2. Create Wallet");
+        System.out.println("3. Top-up");
+        System.out.println("4. Transfer");
+        System.out.println("5. Pay Merchant");
+        System.out.println("6. Refund");
+        System.out.println("7. View Statement");
+        System.out.println("8. Exit");
+        System.out.print("Choose: ");
+    }
+
+    // ----------------- Menu actions -----------------
+
+    private static void addUser() {
+        System.out.print("Enter user name: ");
+        String name = scanner.nextLine().trim();
+        if (name.isEmpty()) { System.out.println("Name cannot be empty."); return; }
+        System.out.print("Enter email: ");
+        String email = scanner.nextLine().trim();
+        if (!isValidEmail(email)) { System.out.println("Invalid email."); return; }
+        User u = new User(UUID.randomUUID().toString(), name, email);
+        users.put(u.getId(), u);
+        System.out.println("User created. ID: " + u.getId());
+    }
+
+    private static void createWallet() {
+        System.out.print("Enter user ID to attach wallet to: ");
+        String uid = scanner.nextLine().trim();
+        User u = users.get(uid);
+        if (u == null) { System.out.println("User not found."); return; }
+        Wallet w = new Wallet(UUID.randomUUID().toString(), u);
+        wallets.put(w.getId(), w);
+        u.addWallet(w);
+        System.out.println("Wallet created. ID: " + w.getId());
+    }
+
+    private static void topUp() {
+        System.out.print("Enter wallet ID: ");
+        String wid = scanner.nextLine().trim();
+        Wallet w = wallets.get(wid);
+        if (w == null) { System.out.println("Wallet not found."); return; }
+        System.out.print("Enter top-up amount: ");
+        double amt = readPositiveDouble();
+        if (amt <= 0) { System.out.println("Top-up amount must be > 0."); return; }
+
+        System.out.printf("Confirm top-up of %.2f to wallet %s? (y/n): ", amt, wid);
+        String conf = scanner.nextLine().trim().toLowerCase();
+        TopUp t = new TopUp(UUID.randomUUID().toString(), amt, new Date(), wid);
+        transactions.put(t.getId(), t);
+
+        if (conf.equals("y") || conf.equals("yes")) {
+            t.process(w);
+            StatementEntry e = new StatementEntry(UUID.randomUUID().toString(), "TopUp", amt, w.getBalance(), t.getDate(), t.getId());
+            w.addStatement(e);
+            System.out.println(t.receipt(w));
+        } else {
+            System.out.println("Top-up cancelled.");
+        }
+    }
+
+    private static void transfer() {
+        System.out.print("Enter source wallet ID: ");
+        String fromId = scanner.nextLine().trim();
+        Wallet from = wallets.get(fromId);
+        if (from == null) { System.out.println("Source wallet not found."); return; }
+        System.out.print("Enter destination wallet ID: ");
+        String toId = scanner.nextLine().trim();
+        Wallet to = wallets.get(toId);
+        if (to == null) { System.out.println("Destination wallet not found."); return; }
+        System.out.print("Enter amount to transfer: ");
+        double amt = readPositiveDouble();
+        if (amt <= 0) { System.out.println("Amount must be > 0."); return; }
+
+        Transfer tr = new Transfer(UUID.randomUUID().toString(), amt, new Date(), fromId, toId);
+        transactions.put(tr.getId(), tr);
+        boolean success = tr.process(from, to);
+        if (success) {
+            StatementEntry eFrom = new StatementEntry(UUID.randomUUID().toString(), "Transfer-Out", -amt, from.getBalance(), tr.getDate(), tr.getId());
+            StatementEntry eTo = new StatementEntry(UUID.randomUUID().toString(), "Transfer-In", amt, to.getBalance(), tr.getDate(), tr.getId());
+            from.addStatement(eFrom);
+            to.addStatement(eTo);
+            System.out.println(tr.receipt(from, to));
+        } else {
+            System.out.println("Transfer failed: insufficient funds.");
+        }
+    }
+
+    private static void payMerchant() {
+        System.out.print("Enter wallet ID: ");
+        String wid = scanner.nextLine().trim();
+        Wallet w = wallets.get(wid);
+        if (w == null) { System.out.println("Wallet not found."); return; }
+        System.out.print("Enter merchant name: ");
+        String merchant = scanner.nextLine().trim();
+        if (merchant.isEmpty()) { System.out.println("Merchant required."); return; }
+        System.out.print("Enter amount: ");
+        double amt = readPositiveDouble();
+        if (amt <= 0) { System.out.println("Amount must be > 0."); return; }
+
+        Payment p = new Payment(UUID.randomUUID().toString(), amt, new Date(), wid, merchant);
+        transactions.put(p.getId(), p);
+        boolean success = p.process(w);
+        if (success) {
+            StatementEntry e = new StatementEntry(UUID.randomUUID().toString(), "Payment", -amt, w.getBalance(), p.getDate(), p.getId());
+            w.addStatement(e);
+            System.out.println(p.receipt(w));
+        } else {
+            System.out.println("Payment failed: insufficient funds.");
+        }
+    }
+
+    private static void refund() {
+        System.out.print("Enter wallet ID: ");
+        String wid = scanner.nextLine().trim();
+        Wallet w = wallets.get(wid);
+        if (w == null) { System.out.println("Wallet not found."); return; }
+        System.out.print("Enter payment transaction ID to refund: ");
+        String payId = scanner.nextLine().trim();
+        Transaction t = transactions.get(payId);
+        if (t == null || !(t instanceof Payment)) {
+            System.out.println("Payment transaction not found or invalid.");
+            return;
+        }
+        Payment p = (Payment) t;
+        if (!p.getWalletId().equals(wid)) {
+            System.out.println("Payment does not belong to this wallet.");
+            return;
+        }
+        // Create refund transaction
+        Refund r = new Refund(UUID.randomUUID().toString(), p.getAmount(), new Date(), wid, payId);
+        transactions.put(r.getId(), r);
+        boolean ok = r.process(w, p);
+        if (ok) {
+            StatementEntry e = new StatementEntry(UUID.randomUUID().toString(), "Refund", r.getAmount(), w.getBalance(), r.getDate(), r.getId());
+            w.addStatement(e);
+            System.out.println(r.receipt(w, p));
+        } else {
+            System.out.println("Refund failed.");
+        }
+    }
+
+    private static void viewStatement() {
+        System.out.print("Enter wallet ID to view statement: ");
+        String wid = scanner.nextLine().trim();
+        Wallet w = wallets.get(wid);
+        if (w == null) { System.out.println("Wallet not found."); return; }
+        System.out.println("\nStatement for wallet " + wid + " (Owner: " + w.getOwner().getName() + ")");
+        System.out.println("Date\t\tType\t\tAmount\tBalance\tTxnID");
+        for (StatementEntry e : w.getStatements()) {
+            System.out.println(e.toLine());
+        }
+    }
+
+    // ----------------- Utilities -----------------
+
+    private static boolean isValidEmail(String email) {
+        return email.contains("@") && email.contains(".");
+    }
+
+    private static double readPositiveDouble() {
+        String s = scanner.nextLine().trim();
+        try {
+            double v = Double.parseDouble(s);
+            if (v < 0) return -1;
+            return Math.round(v * 100.0) / 100.0;
+        } catch (NumberFormatException ex) {
+            System.out.println("Invalid number.");
+            return -1;
+        }
+    }
+
+    // ----------------- Domain classes -----------------
+
+    // User
+    public static class User {
+        private String id;
+        private String name;
+        private String email;
+        private List<Wallet> wallets = new ArrayList<>();
+
+        public User(String id, String name, String email) {
+            this.id = id; this.name = name; this.email = email;
+        }
+        public String getId() { return id; }
+        public String getName() { return name; }
+        public String getEmail() { return email; }
+        public void addWallet(Wallet w) { wallets.add(w); }
+        public List<Wallet> getWallets() { return Collections.unmodifiableList(wallets); }
+    }
+
+    // Wallet
+    public static class Wallet {
+        private String id;
+        private User owner;
+        private double balance;
+        private List<StatementEntry> statements = new ArrayList<>();
+
+        public Wallet(String id, User owner) {
+            this.id = id; this.owner = owner; this.balance = 0.0;
+        }
+        public String getId() { return id; }
+        public User getOwner() { return owner; }
+
+        public synchronized double getBalance() { return Math.round(balance * 100.0)/100.0; }
+
+        protected synchronized void credit(double amount) {
+            balance += amount;
+            balance = Math.round(balance * 100.0)/100.0;
+        }
+        protected synchronized boolean debit(double amount) {
+            if (balance >= amount) {
+                balance -= amount;
+                balance = Math.round(balance * 100.0)/100.0;
+                return true;
+            } else {
+                return false;
+            }
+        }
+        public void addStatement(StatementEntry e) {
+            statements.add(e);
+            // keep chronological order by date (simple)
+            statements.sort(Comparator.comparing(StatementEntry::getDate));
+        }
+        public List<StatementEntry> getStatements() { return Collections.unmodifiableList(statements); }
+    }
+
+    // StatementEntry
+    public static class StatementEntry {
+        private String id;
+        private String type;
+        private double amount;
+        private double balanceAfter;
+        private Date date;
+        private String txnId;
+
+        public StatementEntry(String id, String type, double amount, double balanceAfter, Date date, String txnId) {
+            this.id = id; this.type = type; this.amount = Math.round(amount * 100.0)/100.0;
+            this.balanceAfter = Math.round(balanceAfter * 100.0)/100.0;
+            this.date = date; this.txnId = txnId;
+        }
+        public Date getDate() { return date; }
+        public String toLine() {
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+            return String.format("%s\t%s\t%.2f\t%.2f\t%s", sdf.format(date), type, amount, balanceAfter, txnId);
+        }
+    }
+
+    // Abstract Transaction
+    public static abstract class Transaction {
+        private String id;
+        private double amount;
+        private Date date;
+
+        public Transaction(String id, double amount, Date date) {
+            this.id = id; this.amount = amount; this.date = date;
+        }
+        public String getId() { return id; }
+        public double getAmount() { return amount; }
+        public Date getDate() { return date; }
+
+        public abstract boolean process(Wallet w);
+    }
+
+    // TopUp
+    public static class TopUp extends Transaction {
+        private String walletId;
+        public TopUp(String id, double amount, Date date, String walletId) {
+            super(id, amount, date);
+            this.walletId = walletId;
+        }
+        public boolean confirm() { return true; }
+        @Override
+        public boolean process(Wallet w) {
+            if (!w.getId().equals(walletId)) return false;
+            w.credit(getAmount());
+            return true;
+        }
+        public String receipt(Wallet w) {
+            return String.format("TopUp Receipt\nTxn: %s\nAmount: %.2f\nBalance: %.2f\nDate: %s",
+                    getId(), getAmount(), w.getBalance(), new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(getDate()));
+        }
+    }
+
+    // Transfer
+    public static class Transfer extends Transaction {
+        private String fromWalletId;
+        private String toWalletId;
+        public Transfer(String id, double amount, Date date, String fromId, String toId) {
+            super(id, amount, date);
+            this.fromWalletId = fromId; this.toWalletId = toId;
+        }
+        // Overloaded for two-wallet process
+        public boolean process(Wallet from, Wallet to) {
+            if (!from.getId().equals(fromWalletId) || !to.getId().equals(toWalletId)) return false;
+            synchronized (from) {
+                synchronized (to) {
+                    if (!from.debit(getAmount())) return false;
+                    to.credit(getAmount());
+                    return true;
+                }
+            }
+        }
+        @Override
+        public boolean process(Wallet w) { return false; }
+        public String receipt(Wallet from, Wallet to) {
+            return String.format("Transfer Receipt\nTxn: %s\nFrom: %s\nTo: %s\nAmount: %.2f\nFromBalance: %.2f\nToBalance: %.2f\nDate: %s",
+                    getId(), from.getId(), to.getId(), getAmount(), from.getBalance(), to.getBalance(), new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(getDate()));
+        }
+    }
+
+    // Payment
+    public static class Payment extends Transaction {
+        private String walletId;
+        private String merchant;
+        public Payment(String id, double amount, Date date, String walletId, String merchant) {
+            super(id, amount, date);
+            this.walletId = walletId; this.merchant = merchant;
+        }
+        public String getWalletId() { return walletId; }
+        @Override
+        public boolean process(Wallet w) {
+            if (!w.getId().equals(walletId)) return false;
+            return w.debit(getAmount());
+        }
+        public String receipt(Wallet w) {
+            return String.format("Payment Receipt\nTxn: %s\nMerchant: %s\nAmount: %.2f\nBalance: %.2f\nDate: %s",
+                    getId(), merchant, getAmount(), w.getBalance(), new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(getDate()));
+        }
+    }
+
+    // Refund
+    public static class Refund extends Transaction {
+        private String walletId;
+        private String paymentId;
+        public Refund(String id, double amount, Date date, String walletId, String paymentId) {
+            super(id, amount, date);
+            this.walletId = walletId; this.paymentId = paymentId;
+        }
+        // Process refund by crediting wallet if original payment valid
+        public boolean process(Wallet w, Payment originalPayment) {
+            if (!originalPayment.getId().equals(paymentId)) return false;
+            if (!originalPayment.getWalletId().equals(walletId)) return false;
+            // idempotency check: ensure refund not previously done for that payment
+            // (simple scan)
+            for (StatementEntry se : w.getStatements()) {
+                if (paymentId.equals(se.txnId) && se.type.equals("Refund")) {
+                    return false;
+                }
+            }
+            w.credit(getAmount());
+            return true;
+        }
+        @Override
+        public boolean process(Wallet w) { return false; }
+        public String receipt(Wallet w, Payment p) {
+            return String.format("Refund Receipt\nRefundTxn: %s\nOriginalPayment: %s\nAmount: %.2f\nBalance: %.2f\nDate: %s",
+                    getId(), p.getId(), getAmount(), w.getBalance(), new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(getDate()));
+        }
+    }
+}
